@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+ <meta charset="utf-8">
+ <meta name="viewport" content="width=device-width,initial-scale=1">
+ <meta name="theme-color" content="#183d32">
+ <meta name="description" content="Baron — an international property trading game. Create a room, invite friends, and build your empire. No accounts needed.">
+ <title>Baron · The world is your board</title>
+ <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+ <link rel="stylesheet" href="./styles.css">
+ <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+ <header class="site-header">
+  <button class="brand" id="brand-home" aria-label="Baron home">
+   <svg viewBox="0 0 32 30" aria-hidden="true"><path d="m3 7 6 7 7-10 7 10 6-7-3 16H6L3 7Zm4 20h18"/></svg>
+   <span><span class="brand-name">BARON</span><span class="brand-sub">THE WORLD IS YOUR BOARD</span></span>
+  </button>
+  <nav class="header-nav" aria-label="Main navigation"><span id="connection" class="connection">2–8 PLAYERS · DESKTOP</span><button class="text-button" data-open="rules">How to play</button><button id="leave-room" class="text-button" hidden>Leave room</button></nav>
+ </header>
+ <main id="app" tabindex="-1"></main>
+ <footer class="site-footer"><span>BUY WELL. BUILD BIG. BECOME BARON.</span><span>40 spaces. A world of possibility.</span></footer>
+ <dialog id="modal" aria-labelledby="modal-title"><div id="modal-content"></div></dialog>
+ <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+ <noscript><p class="notice">Baron needs JavaScript to connect your room and run the game.</p></noscript>
+</body>
+</html>
