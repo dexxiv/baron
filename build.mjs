@@ -6,13 +6,15 @@ await mkdir('dist',{recursive:true});
 await cp('public','dist',{recursive:true});
 const hash=text=>createHash('sha256').update(text).digest('hex').slice(0,12);
 const data=await readFile('shared/data.mjs','utf8');
+const interaction=await readFile('public/interaction.mjs','utf8');
+const interactionFile=`interaction-${hash(interaction)}.mjs`;
 const config=await readFile('public/config.mjs','utf8');
 const css=await readFile('public/styles.css','utf8');
 const dataFile=`data-${hash(data)}.mjs`,configFile=`config-${hash(config)}.mjs`,cssFile=`styles-${hash(css)}.css`;
 let app=await readFile('public/app.mjs','utf8');
-app=app.replace("from './data.mjs'",`from './${dataFile}'`).replace("from './config.mjs'",`from './${configFile}'`);
+app=app.replace("from './data.mjs'",`from './${dataFile}'`).replace("from './config.mjs'",`from './${configFile}'`).replace("from './interaction.mjs'",`from './${interactionFile}'`);
 const appFile=`app-${hash(app)}.mjs`;
-for(const [name,text] of [[dataFile,data],[configFile,config],[cssFile,css],[appFile,app]])await writeFile('dist/'+name,text);
+for(const [name,text] of [[interactionFile,interaction],[dataFile,data],[configFile,config],[cssFile,css],[appFile,app]])await writeFile('dist/'+name,text);
 // Retain the plain data path for a tab opened before versioned assets shipped.
 await copyFile('shared/data.mjs','dist/data.mjs');
 let html=await readFile('public/index.html','utf8');

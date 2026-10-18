@@ -77,7 +77,7 @@ function finishRoll(s,now){
   s.turn.phase=s.turn.extraRoll&&!p.inJail?'roll':'end';
 }
 function animate(s,id,path,now){
-  const begin=Math.max(now,s.turn?.lockUntil??now),duration=Math.max(260,path.length*90);
+  const begin=Math.max(now,s.turn?.lockUntil??now),duration=Math.max(260,path.length*120);
   s.animations.push({id:s.seq+':'+s.animations.length,playerId:id,path,start:begin,end:begin+duration});s.animations=s.animations.filter(a=>a.end>now-20000).slice(-12);
   if(s.turn){s.turn.lockUntil=begin+duration;if(s.turn.deadline!=null)s.turn.deadline+=duration;else s.turn.remaining=(s.turn.remaining??0)+duration;}
 }
@@ -159,6 +159,8 @@ function drain(s,now,rng){
 function roll(s,id,now,rng){
   const t=s.turn,p=player(s,id);ok(t.playerId===id,'It is not your turn.');ok(['roll','jail'].includes(t.phase),'Finish the current decision first.');
   ok(now>=t.lockUntil,'The pieces are still moving.');const ds=dice(rng),total=ds[0]+ds[1],double=ds[0]===ds[1];t.lastRoll=ds;t.phase='resolve';
+  s.diceRoll={id:crypto.randomUUID(),playerId:id,values:ds,start:now,end:now+400};
+  t.lockUntil=now+400;if(t.deadline!=null)t.deadline+=400;
   log(s,`${p.name} rolled ${ds.join(' + ')}.`,now);
   if(p.inJail){p.jailTurns++;t.extraRoll=false;
     if(double){p.inJail=false;p.jailTurns=0;enqueue(s,{type:'move',id,steps:total},{type:'finish'});}
@@ -345,7 +347,7 @@ export function maintain(s,now=Date.now(),rng=secureInt){
 export function transition(source,id,a,now=Date.now(),rng=secureInt){
   const s=copy(source);const p=player(s,id);ok(p,'Your player session is not in this room.');
   // Update presence before maintenance so a returning tab reclaims its unused grace.
-  p.lastSeen=now;maintain(s,now,rng);
+  if(a.type!=='sync'||now-p.lastSeen>=10000)p.lastSeen=now;maintain(s,now,rng);
   if(a.type==='sync')return s;
   if(a.type==='chat'){
     ok(typeof a.text==='string'&&a.text.trim().length>0&&a.text.length<=500,'Messages can contain 1–500 characters.');
@@ -367,7 +369,7 @@ export function transition(source,id,a,now=Date.now(),rng=secureInt){
   }
   if(s.status==='finished'){
     ok(a.type==='rematch'&&s.hostId===id,'The host can open a rematch lobby.');
-    s.status='lobby';s.deeds=Array(40).fill(null);s.supply={houses:32,hotels:12};s.pot=0;s.trades=[];s.flow=[];s.risk=[];s.bonus=[];s.winnerId=null;s.lastCard=null;s.animations=[];
+    s.status='lobby';s.deeds=Array(40).fill(null);s.supply={houses:32,hotels:12};s.pot=0;s.trades=[];s.flow=[];s.risk=[];s.bonus=[];s.winnerId=null;s.lastCard=null;s.diceRoll=null;s.animations=[];
     for(const p of s.players)Object.assign(p,{cash:1500,pos:0,inJail:false,jailTurns:0,cards:[],bankrupt:false,ready:false,graceUsed:false,finishPlace:null});return s;
   }
   ok(!p.bankrupt,'You are watching this game.');ok(!s.turn.grace,'Waiting for a reconnect grace to finish.');ok(now>=s.turn.lockUntil,'The pieces are still moving.');
@@ -404,7 +406,7 @@ export function transition(source,id,a,now=Date.now(),rng=secureInt){
 }
 export function publicState(s,viewerId,now=Date.now()){
   // Explicit allowlist: never reveal credential hashes, deck order, or request history.
-  return {schema:s.schema,id:s.id,code:s.code,status:s.status,hostId:s.hostId,createdAt:s.createdAt,players:s.players.map(p=>({id:p.id,name:p.name,color:p.color,ready:p.ready,cash:p.cash,pos:p.pos,inJail:p.inJail,jailTurns:p.jailTurns,cards:p.cards,bankrupt:p.bankrupt,graceUsed:p.graceUsed,finishPlace:p.finishPlace,online:now-p.lastSeen<25000})),deeds:s.deeds,supply:s.supply,pot:s.pot,turn:s.turn,auction:s.auction,buildRequest:s.buildRequest,debt:s.debt,trades:s.trades.filter(t=>t.fromId===viewerId||t.toId===viewerId),chat:s.chat,log:s.log,seq:s.seq,animations:s.animations,lastCard:s.lastCard??null,winnerId:s.winnerId??null,serverNow:now,viewerId};
+  return {schema:s.schema,id:s.id,code:s.code,status:s.status,hostId:s.hostId,createdAt:s.createdAt,players:s.players.map(p=>({id:p.id,name:p.name,color:p.color,ready:p.ready,cash:p.cash,pos:p.pos,inJail:p.inJail,jailTurns:p.jailTurns,cards:p.cards,bankrupt:p.bankrupt,graceUsed:p.graceUsed,finishPlace:p.finishPlace,online:now-p.lastSeen<25000})),deeds:s.deeds,supply:s.supply,pot:s.pot,turn:s.turn,auction:s.auction,buildRequest:s.buildRequest,debt:s.debt,trades:s.trades.filter(t=>t.fromId===viewerId||t.toId===viewerId),chat:s.chat,log:s.log,seq:s.seq,animations:s.animations,diceRoll:s.diceRoll??null,lastCard:s.lastCard??null,winnerId:s.winnerId??null,serverNow:now,viewerId};
 }
 export function assertState(s){
   for(const p of s.players){ok(int(p.cash),'Cash invariant failed.');ok(int(p.pos,0,39),'Position invariant failed.');ok(p.cards.every(c=>CARDS[c]?.effect==='escape'),'Held card invariant failed.');}

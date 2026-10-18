@@ -23,7 +23,7 @@ Serve `dist/` with a static web server. ES modules need HTTP(S); opening `index.
 
 The workflow tests before publishing and builds a self-contained static artifact. It needs no repository secrets and no OpenAI services. Use the URL returned by GitHub after deployment. The project repository is [dexxiv/baron](https://github.com/dexxiv/baron).
 
-The Supabase backend is already deployed in **dex's org**, project **Baron**, ref `cmmehdaqvekuslbdjxye`, region `us-east-1`. The browser's `public/config.mjs` contains only its URL and publishable key. No secret/service key belongs in the repository.
+The Supabase backend is already deployed in the connected organization, project **Baron**, ref `cmmehdaqvekuslbdjxye`, region `us-east-1`. The browser's `public/config.mjs` contains only its URL and publishable key. No secret/service key belongs in the repository.
 
 ## Game behavior
 
@@ -51,7 +51,7 @@ The Edge Function sets `verify_jwt=false` because it performs its own guest-sess
 
 ## Backend deployment for maintainers
 
-Apply `database/schema.sql` once to an empty project. Deploy the following files together as the `baron` function, with `index.ts` as its entrypoint, an explicit `deno.json` import-map path, and `verify_jwt=false`:
+Apply `database/schema.sql` once to an empty project, then apply the SQL files in `database/migrations/` in order. Deploy the following files together as the `baron` function, with `index.ts` as its entrypoint, an explicit `deno.json` import-map path, and `verify_jwt=false`:
 
 | Deployment file | Source |
 |---|---|

@@ -133,7 +133,7 @@ Numbers below indicate reading order, beginning with GO as space 1. Names, not o
 - Tokens are plain circles, without icons or letters. Each space has a separate 28-pixel token lane with room for all eight players. Movement hops between these reserved lanes so circles never cross names, prices, or other numbers.
 - The board has a minimum desktop width of 960 pixels. Side panels move below it on narrower desktops; the board does not shrink into cramped labels. Names wrap normally without ellipses or clipping.
 - All secondary gray text is darker. Home example-property cards are raised about 34 pixels, with a separate clear caption area.
-- The live Free Supabase project Baron was created in dex’s org, ref cmmehdaqvekuslbdjxye, in us-east-1. No paid plan or add-on was enabled.
+- The live Free Supabase project Baron was created in the connected organization, ref cmmehdaqvekuslbdjxye, in us-east-1. No paid plan or add-on was enabled.
 
 ## Proposed screen and interaction detail
 

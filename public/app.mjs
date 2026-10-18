@@ -1,13 +1,17 @@
 import {BOARD,GROUPS,COLORS,CARDS,money} from './data.mjs';
 import {BACKEND,PUBLIC_KEY} from './config.mjs';
+import {ActionGate,Playback,turnLocked} from './interaction.mjs';
 const $=s=>document.querySelector(s);
 const app=$('#app'),modal=$('#modal'),modalContent=$('#modal-content');
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const color=id=>COLORS.find(c=>c.id===id)?.hex??'#c2c9b6';
 const colorName=id=>COLORS.find(c=>c.id===id)?.name??'Choose a color';
 const token=p=>`<span class="token" style="--token-color:${color(p?.color)}" aria-label="${esc(p?.name??'Open seat')} · ${esc(colorName(p?.color))}"></span>`;
-const btn=(text,action,extra='',secondary=false)=>`<button class="btn${secondary?' secondary':''}" data-action="${action}" ${extra}>${text}</button>`;
+const btn=(text,action,extra='',secondary=false)=>`<button class="btn${secondary?' secondary':''}" data-action="${action}" ${extra} ${busy?'disabled':''}>${text}</button>`;
 let S=null,version=0,session=null,clockOffset=0,busy=false,modalView=null,conversation='chat',renderKey='',socket=null,socketRoom=null,reconnectTimer=null,heartbeatTimer=null,lastResponse=0,syncPromise=null,timerSyncAt=0,tradeDraft=null,homeJoin=false,toastTimer,boardBuiltFor=null;
+const playback=new Playback();let uiLocked=false,rollingRequest=false,diceFrame=-1;
+const actionGate=new ActionGate(value=>{busy=value;if(!value)rollingRequest=false;render(true);if(modal.open&&modalView)renderModal();});
+const locked=()=>turnLocked(S,now(),playback.end(now()));
 const storage={get(k,fallback=null){try{return JSON.parse(localStorage.getItem(k))??fallback;}catch{return fallback;}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch{toast('Your browser cannot save your seat. Keep this tab open.');}}};
 const sessions=()=>storage.get('baron.sessions',{});
 const guestToken=()=>Array.from(crypto.getRandomValues(new Uint8Array(32))).map(n=>n.toString(16).padStart(2,'0')).join('');
@@ -29,35 +33,42 @@ function restore(root,snap){
  const e=snap.focus&&document.getElementById(snap.focus);if(e&&root.contains(e)){e.focus({preventScroll:true});if(e.setSelectionRange&&typeof snap.start==='number')try{e.setSelectionRange(snap.start,snap.end);}catch{}}
 }
 async function request(body,credential=session?.token){
- const started=Date.now(),requestId=body.requestId??crypto.randomUUID();let response;
+ const requestId=body.requestId??crypto.randomUUID();let response,started;
  // Retry the same request ID once after a dropped response; never duplicate an action.
  for(let attempt=0;attempt<2;attempt++){
-  try{response=await fetch(BACKEND+'/functions/v1/baron',{method:'POST',headers:{apikey:PUBLIC_KEY,'content-type':'application/json','x-baron-token':credential},body:JSON.stringify({...body,requestId}),signal:AbortSignal.timeout(18000)});break;}
+  try{started=Date.now();response=await fetch(BACKEND+'/functions/v1/baron',{method:'POST',headers:{apikey:PUBLIC_KEY,'content-type':'application/json','x-baron-token':credential},body:JSON.stringify({...body,requestId}),signal:AbortSignal.timeout(18000)});break;}
   catch(e){if(attempt===1)throw new Error('Connection lost. Your seat is saved; reconnecting will resume the game.');}
  }
  const data=await response.json().catch(()=>({error:'The game service is unavailable.'}));
  if(!response.ok)throw Object.assign(new Error(data.error??'Could not complete that action.'),{status:response.status});
- if(data.state){clockOffset=data.state.serverNow-Date.now()+(Date.now()-started)/2;lastResponse=Date.now();}
+ if(data.state){clockOffset=data.state.serverNow-Date.now()+Math.max(0,Date.now()-started-(data.elapsedMs??Date.now()-started))/2;lastResponse=Date.now();}
  return data;
 }
 function accept(data){
  if(!data.state||S&&data.state.id===S.id&&data.version<version)return;
- const old=S;S=data.state;version=data.version;session={...session,code:S.code};
+ const old=S;playback.accept(data.state,now());S=data.state;version=data.version;session={...session,code:S.code};
  document.title=`${S.status==='lobby'?'Lobby':S.status==='finished'?'Results':'Playing'} ${S.code} · Baron`;
  $('#leave-room').hidden=false;connectRealtime();render();updateConnection();
  if(S.status==='finished'&&old?.status==='playing')openModal('results');
 }
 async function action(a){
- if(busy)return false;busy=true;document.querySelectorAll('[data-action]').forEach(b=>b.disabled=true);
- try{const data=await request({op:'action',code:S.code,action:a});busy=false;
-  if(a.type==='leave'){if(S.status==='lobby'){const map=sessions();delete map[S.code];storage.set('baron.sessions',map);if(storage.get('baron.lastRoom')===S.code)storage.set('baron.lastRoom',null);}goHome();return true;}accept(data);if(modal.open&&modalView)renderModal();return true;
- }catch(e){busy=false;toast(e.message,true);render(true);if(modal.open&&modalView)renderModal();return false;}
- finally{busy=false;}
+ if(actionGate.busy)return false;rollingRequest=a.type==='roll';
+ return actionGate.run(async()=>{
+  try{const data=await request({op:'action',code:S.code,action:a});
+   if(a.type==='leave'){if(S.status==='lobby'){const map=sessions();delete map[S.code];storage.set('baron.sessions',map);if(storage.get('baron.lastRoom')===S.code)storage.set('baron.lastRoom',null);}goHome();return true;}
+   accept(data);return true;
+  }catch(e){toast(e.message,true);return false;}
+ });
 }
-async function sync(){
- if(!S||!session)return;if(syncPromise)return syncPromise;
- syncPromise=(async()=>{try{accept(await request({op:'sync',code:S.code}));}catch(e){updateConnection(true);if(e.status===401)toast('Your saved seat could not be restored. Open your original browser or return home.',true);}finally{syncPromise=null;}})();
- return syncPromise;
+let syncWanted=0,syncApplied=0;
+async function sync(wanted=0){
+ if(!S||!session)return;syncWanted=Math.max(syncWanted,Number(wanted)||0);if(syncPromise)return syncPromise;
+ syncPromise=(async()=>{
+  try{
+   do{const target=syncWanted;accept(await request({op:'sync',code:S.code}));syncApplied=Math.max(target,version);}while(S&&syncWanted>syncApplied);
+  }catch(e){updateConnection(true);if(e.status===401)toast('Your saved seat could not be restored. Open your original browser or return home.',true);}
+  finally{syncPromise=null;}
+ })();return syncPromise;
 }
 function updateConnection(failed=false){
  const el=$('#connection');if(!S){el.className='connection';el.textContent='2–8 PLAYERS · DESKTOP';return;}
@@ -70,20 +81,29 @@ function connectRealtime(){
  const ws=socket,topic='realtime:baron:'+S.id;
  const send=(event,payload,channel=topic)=>{if(ws.readyState===1)ws.send(JSON.stringify({topic:channel,event,payload,ref:String(ref++),join_ref:channel===topic?'1':null}));};
  ws.onopen=()=>{send('phx_join',{config:{broadcast:{ack:false,self:false},presence:{enabled:false},private:false}});heartbeatTimer=setInterval(()=>send('heartbeat',{},'phoenix'),25000);updateConnection();};
- ws.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.event==='broadcast'&&m.payload?.event==='changed')setTimeout(()=>sync(),100);if(m.event==='phx_error'||m.event==='phx_close')ws.close();}catch{}};
+ ws.onmessage=e=>{try{const m=JSON.parse(e.data);if(m.event==='broadcast'&&m.payload?.event==='changed'){const v=Number(m.payload?.payload?.version)||0;if(v>version)sync(v);};if(m.event==='phx_error'||m.event==='phx_close')ws.close();}catch{}};
  ws.onerror=()=>{};
  ws.onclose=()=>{clearInterval(heartbeatTimer);if(S&&socketRoom===S.id){reconnectTimer=setTimeout(connectRealtime,5000);updateConnection();}};
 }
-function goHome(){S=null;session=null;version=0;renderKey='';modal.close();modalView=null;clearTimeout(reconnectTimer);clearInterval(heartbeatTimer);if(socket){socket.onclose=null;socket.close();socket=null;}socketRoom=null;history.replaceState(null,'',location.pathname);$('#leave-room').hidden=true;document.title='Baron · The world is your board';updateConnection();render();}
+function goHome(){playback.reset();uiLocked=false;syncWanted=0;syncApplied=0;S=null;session=null;version=0;renderKey='';modal.close();modalView=null;clearTimeout(reconnectTimer);clearInterval(heartbeatTimer);if(socket){socket.onclose=null;socket.close();socket=null;}socketRoom=null;history.replaceState(null,'',location.pathname);$('#leave-room').hidden=true;document.title='Baron · The world is your board';updateConnection();render();}
 function render(force=false){
  if(!S){renderHome();return;}
- const key=JSON.stringify([S.status,S.seq,S.hostId,S.players.map(p=>[p.color,p.ready,p.online,p.cash,p.pos,p.inJail,p.bankrupt]),S.deeds,S.auction,S.buildRequest,S.debt,S.turn?.phase,S.turn?.playerId,S.turn?.grace,S.trades,S.chat]);
+ const key=JSON.stringify([S.status,S.seq,S.hostId,S.players.map(p=>[p.color,p.ready,p.online,p.cash,p.pos,p.inJail,p.bankrupt]),S.deeds,S.auction,S.buildRequest,S.debt,S.turn?.phase,S.turn?.playerId,S.turn?.grace,S.turn?.lockUntil,S.turn?.deadline,S.diceRoll,S.trades,S.chat,busy,locked()]);
  if(!force&&key===renderKey)return;renderKey=key;
  const snap=snapshot(app),scrolls=[...app.querySelectorAll('.chat-messages')].map(e=>({top:e.scrollTop,bottom:e.scrollHeight-e.scrollTop-e.clientHeight<45}));
- app.innerHTML=S.status==='lobby'?lobbyHTML():gameHTML();
- if(S.status!=='lobby')buildBoard();restore(app,snap);renderConversation();
+ if(S.status!=='lobby'&&app.querySelector('.game')&&boardBuiltFor===S.id){
+  // Keep the board and its token nodes in place during chat, bids and presence updates.
+  const template=document.createElement('template');template.innerHTML=gameHTML();
+  for(const selector of ['.board-center','.sidebar','.board-bottom']){
+   const current=app.querySelector(selector),fresh=template.content.querySelector(selector);
+   const html=fresh.innerHTML;if(current.dataset.html!==html){current.innerHTML=html;current.dataset.html=html;}
+  }
+  const board=app.querySelector('.board'),tilesKey=JSON.stringify([S.deeds,S.players.map(p=>[p.id,p.color,p.pos,p.bankrupt])]);
+  if(board.dataset.tiles!==tilesKey){buildBoard();board.dataset.tiles=tilesKey;}
+ }else{app.innerHTML=S.status==='lobby'?lobbyHTML():gameHTML();if(S.status!=='lobby')buildBoard();}
+ uiLocked=locked();restore(app,snap);renderConversation();
  app.querySelectorAll('.chat-messages').forEach((e,i)=>{e.scrollTop=scrolls[i]?.bottom!==false?e.scrollHeight:scrolls[i].top;});
- updateClocks();renderTokens();if(modal.open&&modalView&&modalView!=='tradeEdit')renderModal();
+ updateClocks();renderTokens();renderDice();if(modal.open&&modalView&&modalView!=='tradeEdit')renderModal();
 }
 function renderHome(){
  const invite=new URLSearchParams(location.search).get('room')?.toUpperCase()??'',last=storage.get('baron.lastRoom'),saved=last&&sessions()[last];
@@ -120,6 +140,7 @@ function lobbyHTML(){
 function boardPosition(i){if(i===0)return [11,11];if(i<10)return [11,11-i];if(i===10)return [11,1];if(i<20)return [21-i,1];if(i===20)return [1,1];if(i<30)return [1,i-19];if(i===30)return [1,11];return [i-29,11];}
 function buildBoard(){
  const board=$('.board');if(!board)return;
+ board.querySelectorAll('.tile').forEach(el=>el.remove());board.dataset.positions='';
  const tiles=BOARD.map(b=>{
   const [r,c]=boardPosition(b.id),d=S.deeds[b.id],owner=who(d?.ownerId),isMe=me()?.pos===b.id&&!me()?.bankrupt;
   let name=esc(b.name),mark='',price=b.price?money(b.price):b.kind==='tax'?money(b.amount):b.kind==='go'?'Collect $200':b.kind==='jail'?'Just Visiting':b.kind==='parking'?'Collect the pot':'';
@@ -129,7 +150,7 @@ function buildBoard(){
   const corner=[0,10,20,30].includes(b.id);
   return `<button class="tile ${corner?'corner ':''}${!b.price?'special ':''}${d?.mortgaged?'mortgaged ':''}${isMe?'current-space':''}" style="grid-area:${r}/${c};--band:${b.color??'transparent'};--owner:${color(owner?.color)}" data-space="${b.id}" aria-label="${esc(b.name)}${b.price?' · '+money(b.price):''}${owner?' · owned by '+esc(owner.name):''}${d?.mortgaged?' · mortgaged':''}"><span class="tile-band"></span>${d?.buildings?`<span class="tile-buildings">${d.buildings===5?'HOTEL':'▪'.repeat(d.buildings)}</span>`:''}<span class="tile-body">${mark?`<span class="tile-mark" aria-hidden="true">${mark}</span>`:''}<span class="tile-name">${name}</span>${price?`<span class="tile-price">${d?.mortgaged?'Mortgaged':price}</span>`:''}</span><span class="tile-token-lane" data-lane="${b.id}" aria-label="Player tokens"></span>${owner?'<span class="tile-owned" title="'+esc(owner.name)+'"></span>':''}</button>`;
  }).join('');
- board.insertAdjacentHTML('beforeend',tiles);boardBuiltFor=S.id;
+ board.insertAdjacentHTML('beforeend',tiles);boardBuiltFor=S.id;board.dataset.tiles=JSON.stringify([S.deeds,S.players.map(p=>[p.id,p.color,p.pos,p.bankrupt])]);
 }
 function gameHTML(){
  const pending=S.trades.filter(t=>t.status==='pending'&&t.toId===S.viewerId),p=me(),assets=own(p.id);
@@ -139,7 +160,7 @@ function dieHTML(n){const spots={1:[4],2:[0,8],3:[0,4,8],4:[0,2,6,8],5:[0,2,4,6,
 function clockHTML(end,duration=120000){return end?`<span class="clock" data-clock-end="${end}" data-duration="${duration}">--:--</span>`:'<span class="clock">Paused</span>';}
 function turnHTML(){
  if(S.status==='finished')return `<div class="kicker">THE LAST EMPIRE STANDING</div><h2>${esc(who(S.winnerId)?.name)} is Baron.</h2><p>A world well played.</p><button class="btn wide" data-open="results">See the results</button>`;
- const t=S.turn,p=who(t.playerId),isMine=t.playerId===S.viewerId,locked=now()<t.lockUntil,rolls=t.lastRoll??[1,1],diceBlock=`<div class="dice ${locked?'moving':''}">${rolls.map(dieHTML).join('')}</div>`;
+ const t=S.turn,p=who(t.playerId),isMine=t.playerId===S.viewerId,isLocked=locked(),rolls=t.lastRoll??[1,1],diceBlock=diceHTML(rolls);
  if(S.auction){const a=S.auction,min=a.leaderId?a.bid+1:a.kind==='deed'?10:50,canBid=!me().bankrupt&&a.leaderId!==me().id;
   return `<div class="turn-label"><span>LIVE AUCTION · +5 SECONDS PER BID</span>${clockHTML(a.deadline,30000)}</div><div class="clock-track"><span data-track-end="${a.deadline}" data-duration="30000"></span></div><h2>${a.kind==='deed'?esc(BOARD[a.spaceId].name):'One '+a.kind}</h2><p>${a.leaderId?esc(who(a.leaderId)?.name)+' leads the bidding.':'The lot is open to every active player.'}</p><div class="auction-value">${money(a.bid)}</div><form id="bid-form"><label for="bid-amount">YOUR BID · MINIMUM ${money(min)}</label>${a.kind!=='deed'?`<label for="bid-target">BUILD AT</label><select id="bid-target" data-persist>${eligibleBuildings(me().id,a.kind).map(b=>`<option value="${b.id}">${esc(b.name)}</option>`).join('')}</select>`:''}<div class="bid-row"><input id="bid-amount" data-persist type="number" min="${min}" max="${me().cash}" step="1" value="${min}" required aria-label="Your auction bid"><button class="btn" type="submit" ${canBid?'':'disabled'}>Place bid</button></div></form><div class="quick-bids">${[10,25,100].map(n=>`<button class="btn secondary" data-quick-bid="${n}" ${canBid?'':'disabled'}>+${money(n)}</button>`).join('')}</div><div class="status-line">${a.leaderId===me().id?'You have the highest bid. Your bid is reserved until the auction ends.':'The highest cash bid wins when time runs out.'}</div>`;
  }
@@ -147,11 +168,11 @@ function turnHTML(){
  if(t.grace)return `<div class="turn-label"><span>RECONNECT GRACE · ONCE PER GAME</span>${clockHTML(t.grace.until,30000)}</div><h2>Waiting for ${esc(who(t.grace.playerId)?.name)}.</h2><p>The decision clock is paused for up to 30 seconds. Play resumes when they return or the grace ends.</p>`;
  if(S.debt){const d=S.debt,debtor=who(d.from);return `<div class="turn-label"><span>OUTSTANDING DEBT</span>${clockHTML(d.deadline,d.active?150000:30000)}</div><div class="clock-track"><span data-track-end="${d.deadline}" data-duration="${d.active?150000:30000}"></span></div><h2>${esc(debtor.name)} owes ${money(d.amount)}.</h2><p>${esc(d.reason)} · ${money(Math.max(0,d.amount-debtor.cash))} more needed.<br>Sell buildings, mortgage deeds, or make a trade. Remaining debt triggers automatic liquidation at expiry.</p><div class="actions"><button class="btn" data-open="portfolio">Manage your assets</button><button class="btn secondary" data-open="tradeEdit">Trade</button></div>`;}
  let title,copy,actions='';
- if(t.phase==='purchase'){const b=BOARD[t.purchase.spaceId];title=esc(b.name);copy=isMine?`Add this property to your empire for ${money(b.price)}, or send it to auction.`:`${esc(p.name)} is deciding whether to buy for ${money(b.price)}.`;if(isMine)actions=btn('Buy for '+money(b.price),'buy',locked||me().cash<b.price?'disabled':'')+btn('Send to auction','decline',locked?'disabled':'',true);}
- else if(t.phase==='jail'){title=isMine?'A short stay in Jail.':esc(p.name)+' is in Jail.';copy=isMine?'Pay $50, use a held release card, or try for doubles. This is attempt '+(me().jailTurns+1)+' of 3.':'Rent, trades, and building continue while a player is in Jail.';if(isMine)actions=btn('Try for doubles','roll',locked?'disabled':'')+btn('Pay $50','jailPay',locked?'disabled':'',true)+me().cards.map(c=>btn('Use '+(c[0]==='r'?'Risk':'Bonus')+' release','jailCard',`data-card-id="${c}"`,true)).join('');}
- else if(t.phase==='end'){title=isMine?'Your move is complete.':esc(p.name)+' is finishing up.';copy=isMine?'Manage your properties or make a deal, then pass the dice.':'You can manage your empire and offer trades while you wait.';if(isMine)actions=btn('End turn →','end',locked?'disabled':'');}
- else {title=isMine?'The world is waiting.':esc(p.name)+' has the dice.';copy=isMine?(t.doubles?'Doubles! Roll again while your turn clock is running.':'Roll two dice and see where the world takes you.'):'Keep an eye on the board. The next big deal could be yours.';if(isMine)actions=btn(locked?'Moving…':'Roll the dice','roll',locked?'disabled':'');}
- return `<div class="turn-label"><span>${isMine?'YOUR TURN':esc(p.name.toUpperCase())+'’S TURN'}</span>${clockHTML(t.deadline)}</div><div class="clock-track"><span data-track-end="${t.deadline??0}" data-duration="120000"></span></div><h2>${title}</h2><p>${copy}</p>${['purchase','jail'].includes(t.phase)?'':diceBlock}<div class="actions">${actions}</div>${isMine?'':'<small>Your turn will come around soon.</small>'}`;
+ if(t.phase==='purchase'){const b=BOARD[t.purchase.spaceId];title=esc(b.name);copy=isMine?`Add this property to your empire for ${money(b.price)}, or send it to auction.`:`${esc(p.name)} is deciding whether to buy for ${money(b.price)}.`;if(isMine)actions=btn('Buy for '+money(b.price),'buy',isLocked||me().cash<b.price?'disabled':'')+btn('Send to auction','decline',isLocked?'disabled':'',true);}
+ else if(t.phase==='jail'){title=isMine?'A short stay in Jail.':esc(p.name)+' is in Jail.';copy=isMine?'Pay $50, use a held release card, or try for doubles. This is attempt '+(me().jailTurns+1)+' of 3.':'Rent, trades, and building continue while a player is in Jail.';if(isMine)actions=btn('Try for doubles','roll',isLocked?'disabled':'')+btn('Pay $50','jailPay',isLocked?'disabled':'',true)+me().cards.map(c=>btn('Use '+(c[0]==='r'?'Risk':'Bonus')+' release','jailCard',`data-card-id="${c}"`,true)).join('');}
+ else if(t.phase==='end'){title=isMine?'Your move is complete.':esc(p.name)+' is finishing up.';copy=isMine?'Manage your properties or make a deal, then pass the dice.':'You can manage your empire and offer trades while you wait.';if(isMine)actions=btn('End turn →','end',isLocked?'disabled':'');}
+ else {title=isMine?'The world is waiting.':esc(p.name)+' has the dice.';copy=isMine?(t.doubles?'Doubles! Roll again while your turn clock is running.':'Roll two dice and see where the world takes you.'):'Keep an eye on the board. The next big deal could be yours.';if(isMine)actions=btn(isLocked?'Moving…':'Roll the dice','roll',isLocked?'disabled':'');}
+ return `<div class="turn-label"><span>${isMine?'YOUR TURN':esc(p.name.toUpperCase())+'’S TURN'}</span>${clockHTML(t.deadline)}</div><div class="clock-track"><span data-track-end="${t.deadline??0}" data-duration="120000"></span></div><h2>${title}</h2><p>${copy}</p>${diceBlock}<div class="actions">${actions}</div>${isMine?'':'<small>Your turn will come around soon.</small>'}`;
 }
 function updateClocks(){
  const n=now();document.querySelectorAll('[data-clock-end]').forEach(el=>{const secs=Math.max(0,Math.ceil((Number(el.dataset.clockEnd)-n)/1000));el.textContent=String(Math.floor(secs/60)).padStart(2,'0')+':'+String(secs%60).padStart(2,'0');el.classList.toggle('urgent',secs<=15);});
@@ -159,20 +180,32 @@ function updateClocks(){
  if(S?.status==='playing'){
   const deadline=S.turn?.grace?.until??S.auction?.deadline??S.buildRequest?.deadline??S.debt?.deadline??S.turn?.deadline;
   if(deadline&&n>deadline&&Date.now()-timerSyncAt>1500&&!syncPromise){timerSyncAt=Date.now();sync();}
-  const locked=S.turn?.lockUntil>n;
-  if(!locked&&app.querySelector('.dice.moving'))render(true);
+  const currentLock=locked();
+  if(currentLock!==uiLocked){uiLocked=currentLock;render(true);}
  }
+}
+function diceHTML(rolls){
+ const rolling=rollingRequest||!!playback.active('dice',now());
+ const moving=!!playback.active('move',now());
+ return `<div class="dice ${rolling?'rolling':''}" aria-label="${rolling?'Rolling dice':`Rolled ${rolls.join(' and ')}`}">${rolls.map(dieHTML).join('')}</div><div class="move-status" aria-live="polite">${rolling?'Rolling…':moving?'Moving around the board…':''}</div>`;
+}
+function renderDice(){
+ if(!S||S.status!=='playing')return;const box=app.querySelector('.dice');if(!box)return;
+ const n=now(),event=playback.active('dice',n),rolling=rollingRequest||!!event,frame=rolling?Math.floor(n/80):-1;
+ if(box.classList.contains('rolling')!==rolling){box.classList.toggle('rolling',rolling);diceFrame=-2;}
+ if(frame!==diceFrame){diceFrame=frame;const values=rolling?[frame%6+1,(frame*5+2)%6+1]:S.turn?.lastRoll??[1,1];box.innerHTML=values.map(dieHTML).join('');box.setAttribute('aria-label',rolling?'Rolling dice':`Rolled ${values.join(' and ')}`);}
+ const status=app.querySelector('.move-status');if(status){const text=rolling?'Rolling…':playback.active('move',n)?'Moving around the board…':'';if(status.textContent!==text)status.textContent=text;}
 }
 function renderTokens(){
  if(!S||S.status==='lobby'||!$('.board'))return;
- const positions=[];for(const [slot,p] of S.players.entries()){
-  if(p.bankrupt)continue;let pos=p.pos;const animations=(S.animations??[]).filter(a=>a.playerId===p.id&&a.end>now()).sort((a,b)=>a.start-b.start),a=animations.find(a=>a.start<=now())??animations[0];
-  if(a){const index=Math.max(0,Math.min(a.path.length-1,Math.floor((now()-a.start)/(a.end-a.start)*a.path.length)));pos=a.path[index];}
-  positions.push({p,slot,pos});
+ const n=now(),board=$('.board');
+ for(const [slot,p] of S.players.entries()){
+  let circle=board.querySelector(`[data-player="${p.id}"]`);
+  if(p.bankrupt){circle?.remove();continue;}
+  const pos=playback.position(p,n),lane=board.querySelector(`[data-lane="${pos}"]`);if(!lane)continue;
+  if(!circle){circle=document.createElement('span');circle.dataset.player=p.id;circle.className='tile-token'+(p.id===S.viewerId?' you':'');circle.style.setProperty('--token-color',color(p.color));circle.style.gridColumn=String(slot%4+1);circle.style.gridRow=String(Math.floor(slot/4)+1);circle.title=p.name;circle.setAttribute('aria-label',p.name);}
+  if(circle.parentElement!==lane){circle.classList.remove('stepping');lane.append(circle);if(playback.active('move',n))circle.classList.add('stepping');}
  }
- const key=positions.map(x=>x.p.id+':'+x.pos).join('|');const board=$('.board');if(board.dataset.positions===key)return;board.dataset.positions=key;
- board.querySelectorAll('.tile-token-lane').forEach(e=>e.replaceChildren());
- for(const {p,slot,pos} of positions){const lane=board.querySelector(`[data-lane="${pos}"]`);if(!lane)continue;const circle=document.createElement('span');circle.className='tile-token'+(p.id===S.viewerId?' you':'');circle.style.setProperty('--token-color',color(p.color));circle.style.gridColumn=String(slot%4+1);circle.style.gridRow=String(Math.floor(slot/4)+1);circle.title=p.name+(p.inJail&&pos===10?' · in Jail':'');circle.setAttribute('aria-label',circle.title);lane.append(circle);}
 }
 function eligibleBuildings(id,kind){
  if(!S||S.debt)return [];return BOARD.filter(b=>{const d=S.deeds[b.id];if(b.kind!=='city'||d?.ownerId!==id||d.buildings>=5||!groupOwned(id,b.group)||group(b.group).some(x=>S.deeds[x.id].mortgaged))return false;const levels=group(b.group).map(x=>S.deeds[x.id].buildings);return d.buildings===Math.min(...levels)&&(!kind||(d.buildings===4?'hotel':'house')===kind)&&(d.buildings===4?S.supply.hotels>0:S.supply.houses>0);});
@@ -198,7 +231,7 @@ function renderModal(){
 function deedHTML(i){
  const b=BOARD[i],d=S?.deeds[i],owner=who(d?.ownerId),mine=owner?.id===S?.viewerId;
  if(!b.price)return modalHead(esc(b.name))+`<p class="quiet">${({go:'Collect $200 each time you pass or land on GO while moving forward.',bonus:'Draw the next Bonus card and follow its instructions.',risk:'Draw the next Risk card and follow its instructions.',tax:`Pay ${money(b.amount)} into the Free Parking pot.`,jail:'Visitors wait here safely. Jailed players may pay $50, use a held release card, or try for doubles on up to three turns.',parking:`Land here to collect the entire pot: ${money(S?.pot??0)}. The pot then resets to zero.`,gojail:'Go directly to Jail. Do not pass GO or collect $200.'})[b.kind]}</p>`;
- const locked=!!(S.auction||S.buildRequest||S.turn?.grace)||now()<(S.turn?.lockUntil??0),developed=b.group&&groupBuilt(b.group),redeem=b.mortgage+(d?.interestPaidUntil>now()?0:Math.ceil(b.mortgage*.1));
+ const locked=!!(S.auction||S.buildRequest||S.turn?.grace)||turnLocked(S,now(),playback.end(now())),developed=b.group&&groupBuilt(b.group),redeem=b.mortgage+(d?.interestPaidUntil>now()?0:Math.ceil(b.mortgage*.1));
  let economics=b.kind==='city'?`<table><tbody>${[['Base rent',b.rents[0]],['Full country, no buildings',2*b.rents[0]],...b.rents.slice(1,5).map((n,j)=>[(j+1)+' house'+(j?'s':''),n]),['Hotel',b.rents[5]]].map(([l,n])=>`<tr><th>${l}</th><td>${money(n)}</td></tr>`).join('')}</tbody></table><p class="modal-sub" style="margin-top:14px">Each house or hotel step costs ${money(b.build)}. Buildings sell for half price. Build and sell evenly across ${esc(b.country)}.</p>`:b.kind==='airport'?'<table><tbody><tr><th>1 airport</th><td>$25 rent</td></tr><tr><th>2 airports</th><td>$50 rent</td></tr><tr><th>3 airports</th><td>$100 rent</td></tr><tr><th>4 airports</th><td>$200 rent</td></tr></tbody></table>':'<p class="quiet">With one network, rent is 4 times the dice total. With both networks, rent is 10 times the total. A Risk card may require a new roll at 10 times the total.</p>';
  const canBuild=mine&&eligibleBuildings(me().id).some(x=>x.id===i)&&!S.debt&&me().cash>=b.build;
  return `<div class="tile-detail-band" style="--band:${b.color??'#83927d'}"></div>${modalHead(esc(b.name),`${esc(b.country??(b.kind==='airport'?'INTERNATIONAL TRANSPORT':'NETWORK'))} · ${money(b.price)} purchase`)}<div class="actions split" style="margin-bottom:16px"><span class="chip">${owner?'Owned by '+esc(owner.name):'Unowned'}</span>${d?`<span class="chip">${d.mortgaged?'Mortgaged':d.buildings===5?'Hotel':d.buildings+' houses'}</span>`:''}</div>${economics}<table><tbody><tr><th>Mortgage value</th><td>${money(b.mortgage)}</td></tr><tr><th>Mortgage redemption ${d?.interestPaidUntil>now()?'(transfer interest already paid)':''}</th><td>${money(redeem)}</td></tr></tbody></table>${mine&&S.status==='playing'?`<hr><div class="actions">${b.kind==='city'?btn(d.buildings===4?'Build hotel':'Build house','build',`data-space-id="${i}" ${!locked&&canBuild?'':'disabled'}`):''}${d.buildings?btn('Sell one building','sell',`data-space-id="${i}" ${locked?'disabled':''}`,true):''}${d.mortgaged?btn('Redeem for '+money(redeem),'redeem',`data-space-id="${i}" ${locked||S.debt||me().cash<redeem?'disabled':''}`,true):btn('Mortgage for '+money(b.mortgage),'mortgage',`data-space-id="${i}" ${locked||developed?'disabled':''}`,true)}${developed?btn('Sell all buildings in '+esc(b.country),'sellGroup',`data-group="${b.group}" ${locked?'disabled':''}`,true):''}</div><p class="modal-sub" style="margin-top:13px">${developed?'Sell all buildings in this country before mortgaging or trading its deeds.':'Mortgaged properties collect no rent.'}</p>`:''}`;
@@ -263,7 +296,7 @@ document.addEventListener('change',e=>{if(e.target.id==='trade-recipient'){colle
 modal.addEventListener('close',()=>{if(modalView==='tradeEdit')collectTrade();modalView=null;});
 modal.addEventListener('click',e=>{if(e.target===modal){const r=modal.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)modal.close();}});
 window.addEventListener('online',()=>sync());document.addEventListener('visibilitychange',()=>{if(!document.hidden)sync();});
-setInterval(()=>{updateClocks();renderTokens();},90);
+setInterval(()=>{updateClocks();renderTokens();renderDice();},60);
 setInterval(()=>{if(S)sync();},15000);
 const invite=new URLSearchParams(location.search).get('room')?.toUpperCase();
 if(invite&&sessions()[invite])resume(invite);else renderHome();

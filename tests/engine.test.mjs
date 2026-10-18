@@ -39,7 +39,7 @@ test('declined property auctions include declining player and add five seconds e
  let s=base();s=act(s,'a',{type:'roll'},0,rnd(0,1));s=act(s,'a',{type:'decline'},1000);assert.equal(s.auction.deadline,NOW+31000);assert.equal(s.turn.deadline,null);
  s=act(s,'a',{type:'bid',amount:10},2000);assert.equal(s.auction.deadline,NOW+36000);
  assert.throws(()=>act(s,'a',{type:'bid',amount:11},2500),/highest/);
- s=act(s,'b',{type:'bid',amount:20},3000);assert.equal(s.auction.deadline,NOW+41000);tick(s,41001);assert.equal(s.deeds[3].ownerId,'b');assert.equal(s.players[1].cash,1480);assert.equal(s.turn.phase,'end');assert.equal(s.turn.deadline,NOW+160361);
+ s=act(s,'b',{type:'bid',amount:20},3000);assert.equal(s.auction.deadline,NOW+41000);tick(s,41001);assert.equal(s.deeds[3].ownerId,'b');assert.equal(s.players[1].cash,1480);assert.equal(s.turn.phase,'end');assert.equal(s.turn.deadline,NOW+160881);
 });
 test('rent tables, monopoly doubling, mortgage suppression, airports and networks',()=>{
  const s=own(base(),'b',1,3,5,15,25,35,12,28);assert.equal(rent(s,3),8);s.deeds[3].mortgaged=true;assert.equal(rent(s,3),0);assert.equal(rent(s,1),4);assert.equal(rent(s,5),200);assert.equal(rent(s,5,0,{doubleAirport:true}),400);assert.equal(rent(s,12,7),70);
@@ -54,7 +54,7 @@ test('three doubles sends player to Jail without moving on the third roll',()=>{
 });
 test('Jail doubles releases without bonus roll; third failure pays and uses rolled move',()=>{
  let s=base();s.players[0].pos=10;s.players[0].inJail=true;s.turn.phase='jail';s=act(s,'a',{type:'roll'},0,rnd(2,2));assert.equal(s.players[0].inJail,false);assert.equal(s.turn.extraRoll,false);
- s=act(s,'a',{type:'buy'},1000);assert.equal(s.turn.phase,'end');
+ s=act(s,'a',{type:'buy'},s.turn.lockUntil-NOW+1);assert.equal(s.turn.phase,'end');
  s=base();s.players[0].pos=10;s.players[0].inJail=true;s.players[0].jailTurns=2;s.turn.phase='jail';s=act(s,'a',{type:'roll'},0,rnd(0,1));assert.equal(s.pot,50);assert.equal(s.players[0].pos,13);assert.equal(s.players[0].cash,1450);
 });
 test('taxes and bank card fees feed Free Parking, landing empties it',()=>{
@@ -117,7 +117,7 @@ test('whole games survive randomized actions, auctions, debts and clocks',()=>{
    else if(s.turn.phase==='roll'||s.turn.phase==='jail')a={type:'roll'};
    else if(s.turn.phase==='purchase')a={type:s.players.find(p=>p.id===id).cash>=BOARD[s.turn.purchase.spaceId].price&&rng(3)?'buy':'decline'};
    else if(s.turn.phase==='end')a={type:'end'};
-   if(a)s=transition(s,id,a,time,rng);assertState(s);
+   if(a){time=Math.max(time,s.turn.lockUntil);online(s,time);s=transition(s,id,a,time,rng);}assertState(s);
    if(step>30&&s.status==='playing'&&!s.auction&&!s.debt&&!s.buildRequest&&time>=s.turn.lockUntil){
     const participants=s.players.filter(p=>!p.bankrupt);const p=participants[rng(participants.length)];
     const mortgaged=BOARD.find(b=>s.deeds[b.id]?.ownerId===p.id&&s.deeds[b.id].mortgaged&&p.cash>redemptionCost(s,b.id,time)+300);
@@ -135,7 +135,7 @@ test('back three from Risk can chain into Bonus and the correct bank penalty',()
  let s=base();s.players[0].pos=33;s.risk=['r8',...s.risk.filter(c=>c!=='r8')];s.bonus=['b11',...s.bonus.filter(c=>c!=='b11')];s=act(s,'a',{type:'roll'},0,rnd(0,1));assert.equal(s.players[0].pos,33);assert.equal(s.pot,50);assert.equal(s.players[0].cash,1450);assertState(s);
 });
 test('off-turn birthday debt pauses active player and supplies its own 30 seconds',()=>{
- let s=base(3);s.players[0].pos=14;s.players[1].cash=0;own(s,'b',1);s.bonus=['b8',...s.bonus.filter(c=>c!=='b8')];s=act(s,'a',{type:'roll'},0,rnd(0,1));assert.equal(s.debt.from,'b');assert.equal(s.debt.active,false);assert.equal(s.turn.deadline,null);assert.equal(s.debt.deadline,NOW+30360);
+ let s=base(3);s.players[0].pos=14;s.players[1].cash=0;own(s,'b',1);s.bonus=['b8',...s.bonus.filter(c=>c!=='b8')];s=act(s,'a',{type:'roll'},0,rnd(0,1));assert.equal(s.debt.from,'b');assert.equal(s.debt.active,false);assert.equal(s.turn.deadline,null);assert.equal(s.debt.deadline,s.turn.lockUntil+30000);
  online(s,s.debt.deadline+1);maintain(s,s.debt.deadline+1,rnd(0,1));assert.equal(s.players[0].cash,1520);assert.equal(s.players[1].cash,20);assert.equal(s.players[2].cash,1490);assert.equal(s.debt,null);assert.equal(s.turn.playerId,'a');assert.equal(s.turn.phase,'end');assert.ok(s.turn.deadline>NOW+120000);assertState(s);
 });
 test('bankruptcy to bank queues property auctions and skips the bankrupt turn',()=>{
@@ -163,4 +163,20 @@ test('expiry after a doubles roll does not grant an extra roll after mandatory a
 
 test('only the lobby host can remove a seat and its returning session',()=>{
  let s=newRoom({id:'room',code:'ABCDEF',playerId:'a',name:'Ada',tokenHash:'one',now:NOW});joinRoom(s,{playerId:'b',name:'Bea',tokenHash:'two',now:NOW});assert.throws(()=>act(s,'b',{type:'remove',playerId:'a'}),/host/);s=act(s,'a',{type:'remove',playerId:'b'});assert.equal(s.players.length,1);assert.equal(s.sessions.b,undefined);
+});
+
+
+test('dice and chained movement have ordered, compensated animation windows',()=>{
+ let s=base();const deadline=s.turn.deadline;
+ s=act(s,'a',{type:'roll'},0,rnd(0,1));
+ assert.deepEqual(s.diceRoll.values,[1,2]);assert.equal(s.diceRoll.end,NOW+400);
+ assert.equal(s.animations[0].start,s.diceRoll.end);assert.equal(s.turn.lockUntil,s.animations[0].end);
+ assert.equal(s.turn.deadline-deadline,s.turn.lockUntil-NOW);
+ assert.throws(()=>act(s,'a',{type:'buy'},s.turn.lockUntil-NOW-1),/moving/);
+ s=act(s,'a',{type:'buy'},s.turn.lockUntil-NOW);assert.equal(s.deeds[3].ownerId,'a');
+});
+test('invalidation syncs are read-only until presence or a game deadline needs maintenance',()=>{
+ let s=base();const first=act(s,'a',{type:'sync'},100);assert.deepEqual(first,s);
+ const heartbeat=act(s,'a',{type:'sync'},15000);assert.equal(heartbeat.players[0].lastSeen,NOW+15000);
+ s.players.forEach(p=>p.lastSeen=NOW+120001);const expired=act(s,'a',{type:'sync'},120001);assert.equal(expired.turn.playerId,'b');
 });

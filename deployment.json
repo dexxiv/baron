@@ -6,8 +6,8 @@
   "hosting": "GitHub Pages",
   "status": "published",
   "site_url": "https://dexxiv.github.io/baron/",
-  "backend_function_version": 3,
-  "rules_tests": 25,
+  "backend_function_version": 4,
+  "rules_tests": 31,
   "live_room_players_tested": 8,
   "frontend_asset_commit": "ec7445ebb059b61e33be3ed4d784ca3691526c05",
   "concurrency_check": {

@@ -30,42 +30,47 @@ Deno.serve(async(req:Request)=>{
   const token=req.headers.get('x-baron-token');
   if(!token||!/^[a-f0-9]{64}$/.test(token))return respond({error:'A valid player session is required.'},401);
   if(!uuid(b.requestId))return respond({error:'A request ID is required.'},400);
-  const hash=await sha(token),now=Date.now();
+  const receivedAt=Date.now(),hash=await sha(token);
+  const view=(state:any,id:string,version:number)=>{const sentAt=Date.now();return respond({state:publicState(state,id,sentAt),version,elapsedMs:sentAt-receivedAt});};
   if(b.op==='create'){
    const existing=(await db('baron_rooms?id=eq.'+b.requestId+'&select=id,code,version,state&limit=1'))?.[0];
-   if(existing){const id=identity(existing.state,hash);if(!id)return respond({error:'This request ID is already used.'},409);return respond({state:publicState(existing.state,id,now),version:existing.version});}
+   if(existing){const id=identity(existing.state,hash);if(!id)return respond({error:'This request ID is already used.'},409);return view(existing.state,id,existing.version);}
    const ip=req.headers.get('x-forwarded-for')?.split(',')[0]?.trim()||'unknown';
    await rate('create:'+await sha(KEY+ip),5,3600);
    const playerId=crypto.randomUUID();
-   const s=newRoom({id:b.requestId,code:code(),playerId,name:b.name,tokenHash:hash,now});
+   const s=newRoom({id:b.requestId,code:code(),playerId,name:b.name,tokenHash:hash,now:Date.now()});
    // Room codes use a uniqueness constraint. Retry a collision without creating extra rooms.
    for(let i=0;i<5;i++){
     const r=await fetch(URL+'/rest/v1/baron_rooms',{method:'POST',headers:{...headers,Prefer:'return=representation'},body:JSON.stringify({id:s.id,code:s.code,state:s}),signal:AbortSignal.timeout(12000)});
-    if(r.ok){const rows=await r.json();return respond({state:publicState(s,playerId,now),version:rows[0].version});}
+    if(r.ok){const rows=await r.json();return view(s,playerId,rows[0].version);}
     const err=await r.json().catch(()=>null);if(err?.code==='23505'){s.code=code();continue;}
     console.error('Create room failed',r.status,err?.code);throw new Error('Could not create the room. Please retry.');
    }
    throw new Error('Could not allocate a room code. Please retry.');
   }
   if(typeof b.code!=='string'||!/^[A-Z2-9]{6}$/.test(b.code))return respond({error:'Enter a six-character room code.'},400);
-  await rate('session:'+hash,180,60);
+  // One database round trip loads the room and applies the per-session rate limit.
+  const loaded=await db('rpc/baron_load_room',{p_code:b.code,p_session_hash:hash});
+  if(loaded.limited)return respond({error:'Too many requests. Wait a moment and try again.'},422);
   for(let attempt=0;attempt<12;attempt++){
-   const room=await findRoom(b.code);if(!room)return respond({error:'Room not found. Check the code.'},404);
+   const room=attempt===0?loaded.room:await findRoom(b.code),now=Date.now();if(!room)return respond({error:'Room not found. Check the code.'},404);
    const state=room.state;let id=identity(state,hash),next;
    if(b.op==='join'&&!id){
     if(state.status!=='lobby')return respond({error:'This game has started. Reconnect using the browser that holds your original seat.'},403);
     id=crypto.randomUUID();next=structuredClone(state);joinRoom(next,{playerId:id,name:b.name,tokenHash:hash,now});
    }else{
     if(!id)return respond({error:'Your saved session does not belong to this room.'},401);
-    if(state.requests.some((r:any)=>r.id===b.requestId&&r.playerId===id))return respond({state:publicState(state,id,now),version:room.version});
+    if(state.requests.some((r:any)=>r.id===b.requestId&&r.playerId===id))return view(state,id,room.version);
     const action=b.op==='join'||b.op==='sync'?{type:'sync'}:b.op==='action'?b.action:null;
     if(!action||typeof action.type!=='string')return respond({error:'Invalid game request.'},400);
     next=transition(state,id,action,now);
    }
+   // Invalidation reads within the heartbeat window require no write, CAS conflict or broadcast.
+   if((b.op==='sync'||b.op==='join')&&JSON.stringify(next)===JSON.stringify(state))return view(state,id,room.version);
    assertState(next);next.requests.push({id:b.requestId,playerId:id});next.requests=next.requests.slice(-100);
    const notify=state.seq!==next.seq||JSON.stringify(state.trades)!==JSON.stringify(next.trades)||JSON.stringify(state.chat)!==JSON.stringify(next.chat)||JSON.stringify(state.players.map((p:any)=>[p.id,p.color,p.ready]))!==JSON.stringify(next.players.map((p:any)=>[p.id,p.color,p.ready]))||state.status!==next.status;
    const committed=await db('rpc/baron_commit',{p_id:room.id,p_expected:room.version,p_state:next,p_notify:notify});
-   if(committed)return respond({state:publicState(next,id,now),version:room.version+1});
+   if(committed)return view(next,id,room.version+1);
   }
   return respond({error:'The room changed at the same time. Please try that action again.'},409);
  }catch(e){
