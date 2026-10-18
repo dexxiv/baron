@@ -1,7 +1,22 @@
-import {mkdir,cp,copyFile} from 'node:fs/promises';
+import {mkdir,cp,copyFile,readFile,writeFile,rm} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
 process.chdir(import.meta.dirname);
+await rm('dist',{recursive:true,force:true});
 await mkdir('dist',{recursive:true});
 await cp('public','dist',{recursive:true});
+const hash=text=>createHash('sha256').update(text).digest('hex').slice(0,12);
+const data=await readFile('shared/data.mjs','utf8');
+const config=await readFile('public/config.mjs','utf8');
+const css=await readFile('public/styles.css','utf8');
+const dataFile=`data-${hash(data)}.mjs`,configFile=`config-${hash(config)}.mjs`,cssFile=`styles-${hash(css)}.css`;
+let app=await readFile('public/app.mjs','utf8');
+app=app.replace("from './data.mjs'",`from './${dataFile}'`).replace("from './config.mjs'",`from './${configFile}'`);
+const appFile=`app-${hash(app)}.mjs`;
+for(const [name,text] of [[dataFile,data],[configFile,config],[cssFile,css],[appFile,app]])await writeFile('dist/'+name,text);
+// Retain the plain data path for a tab opened before versioned assets shipped.
 await copyFile('shared/data.mjs','dist/data.mjs');
-await copyFile('public/index.html','dist/404.html');
-console.log('Built static GitHub Pages site in dist/');
+let html=await readFile('public/index.html','utf8');
+html=html.replace('href="./styles.css"',`href="./${cssFile}"`).replace('src="./app.mjs"',`src="./${appFile}"`);
+await writeFile('dist/index.html',html);
+await writeFile('dist/404.html',html);
+console.log(`Built GitHub Pages site in dist/ (${appFile}, ${cssFile})`);
