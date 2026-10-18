@@ -1,6 +1,6 @@
 # Baron — working game and design specification
 
-Updated October 18, 2026. Rules, board assignments, timing interpretations, and visual direction were approved by the user. Airport labels use IATA codes followed by Airport. The desktop review is complete. The game and backend have been implemented; GitHub Pages publication and browser layout QA are pending.
+Updated October 18, 2026. Rules, board assignments, timing interpretations, and visual direction were approved by the user. Airport labels use IATA codes followed by Airport. The desktop review is complete. The game and backend have been implemented; GitHub Pages publication and live browser layout QA are complete.
 
 ## Product
 
@@ -161,7 +161,7 @@ Completed: the country/city board, pot-payment classification, timing behavior, 
 
 Completed: the desktop mockups and the latest contrast, token, spacing, and home-card refinements were approved.
 
-Implemented: rules engine, desktop interface, Supabase persistence, authenticated guest actions, and Realtime notifications. Rules tests and live multi-session service checks pass. Remaining: publish to GitHub Pages and perform browser visual/interaction QA. The managed local preview is unavailable because its sandbox cannot mount /proc; do not treat visual QA as completed.
+Implemented: rules engine, desktop interface, Supabase persistence, authenticated guest actions, and Realtime notifications. Rules tests and live multi-session service checks pass. Published at https://dexxiv.github.io/baron/ in the dexxiv/baron repository. Live browser QA covered an eight-player room, all forty labels, circle-token separation, desktop panels, auction extensions, AFK expiry, chat, typed property/cash counteroffers, and refresh recovery. The managed local preview remains unavailable, so browser checks used the published site.
 
 Review should continue at the agreed stages; do not silently replace this concept with another game.
 

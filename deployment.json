@@ -1,1 +1,18 @@
-{"repository":"dexxiv/baron","repository_id":"1424546487","source_branch":"main","repository_url":"https://github.com/dexxiv/baron","hosting":"GitHub Pages","status":"configuring"}
+{
+  "repository": "dexxiv/baron",
+  "repository_id": "1424546487",
+  "source_branch": "main",
+  "repository_url": "https://github.com/dexxiv/baron",
+  "hosting": "GitHub Pages",
+  "status": "published",
+  "site_url": "https://dexxiv.github.io/baron/",
+  "backend_function_version": 3,
+  "rules_tests": 25,
+  "live_room_players_tested": 8,
+  "frontend_asset_commit": "ec7445ebb059b61e33be3ed4d784ca3691526c05",
+  "concurrency_check": {
+    "simultaneous_clients": 8,
+    "submitted_messages": 24,
+    "accepted_messages": 24
+  }
+}

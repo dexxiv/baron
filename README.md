@@ -1,5 +1,7 @@
 # Baron
 
+**Play: [dexxiv.github.io/baron](https://dexxiv.github.io/baron/)**
+
 A desktop international property-trading game for 2–8 players. The static website runs on GitHub Pages; a Supabase Free project stores rooms and validates actions. Players enter a username and room code, choose a unique circle-token color, and play without creating an account.
 
 ## Run and test
@@ -11,7 +13,7 @@ npm test
 npm run build
 ```
 
-Serve `dist/` with a static web server. ES modules need HTTP(S); opening `index.html` directly with a file URL does not work. The configured backend is live. `node tests/live-smoke.mjs` creates a QA room and checks two real guest sessions, lobby/start, turn enforcement, replay protection, concurrent chat, Realtime broadcasts, closed entry, and database privacy. Run it intentionally; it creates a room and uses the free project's request quota.
+Serve `dist/` with a static web server. ES modules need HTTP(S); opening `index.html` directly with a file URL does not work. The configured backend is live. `node tests/live-smoke.mjs` creates a QA room and checks two real guest sessions, lobby/start, turn enforcement, replay protection, concurrent chat, Realtime broadcasts, closed entry, and database privacy. Run it intentionally; it creates a room and uses the free project's request quota. `node tests/live-concurrency.mjs` creates an eight-session room and checks three batches of simultaneous chat submissions; it is also a deliberate live check, not part of CI.
 
 ## Publish on GitHub Pages
 
@@ -62,4 +64,4 @@ Redeploy the function whenever its engine or data changes; publishing Pages alon
 
 ## Verification status
 
-See `docs/Validation.md` for the tested cases and remaining browser/publishing checks. The test suite includes randomized multi-player simulations in addition to focused edge cases. Browser layout QA is still pending because the managed local preview service could not start in this environment.
+See `docs/Validation.md` for the tested cases and remaining browser/publishing checks. The test suite includes randomized multi-player simulations in addition to focused edge cases. Live browser QA passed in an eight-player room, including board-label/token separation, chat, auctions, typed counteroffers exchanging property and cash, and refresh recovery. Both the 963px board with sidebar and the 1080px board with panels below were checked.

@@ -49,7 +49,7 @@ Deno.serve(async(req:Request)=>{
   }
   if(typeof b.code!=='string'||!/^[A-Z2-9]{6}$/.test(b.code))return respond({error:'Enter a six-character room code.'},400);
   await rate('session:'+hash,180,60);
-  for(let attempt=0;attempt<6;attempt++){
+  for(let attempt=0;attempt<12;attempt++){
    const room=await findRoom(b.code);if(!room)return respond({error:'Room not found. Check the code.'},404);
    const state=room.state;let id=identity(state,hash),next;
    if(b.op==='join'&&!id){
